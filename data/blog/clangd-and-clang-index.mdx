@@ -1,0 +1,226 @@
+---
+title: 'clangd and clang index'
+date: '2025-12-11'
+lastmod: '2025-12-11'
+tags: ['clang AST', 'clangd']
+draft: false
+summary: 'Notes of my first dive into clangd'
+images: []
+---
+
+`clang-tools-extra/clangd/index/FileIndex.cpp:indexSymbols`
+->`index::indexTopLevelDecls`
+
+
+```cpp
+void index::indexTopLevelDecls(ASTContext &Ctx, Preprocessor &PP,
+                               ArrayRef<const Decl *> Decls,
+                               IndexDataConsumer &DataConsumer,
+                               IndexingOptions Opts) {
+  IndexingContext IndexCtx(Opts, DataConsumer);
+  IndexCtx.setASTContext(Ctx);
+
+  DataConsumer.initialize(Ctx);
+
+  if (Opts.IndexMacrosInPreprocessor)
+    indexPreprocessorMacros(PP, DataConsumer);
+
+  for (const Decl *D : Decls)
+    IndexCtx.indexTopLevelDecl(D);
+  DataConsumer.finish();
+}
+```
+
+```cpp
+bool IndexingContext::indexTopLevelDecl(const Decl *D) {
+  if (!D || D->getLocation().isInvalid())
+    return true;
+
+  if (isa<ObjCMethodDecl>(D))
+    return true; // Wait for the objc container.
+
+  if (IndexOpts.ShouldTraverseDecl && !IndexOpts.ShouldTraverseDecl(D))
+    return true; // skip
+
+  return indexDecl(D);
+}
+```
+
+
+DeclContext: The Decls containing more Decls. Ex: class
+`clang/lib/Index/IndexDecl.cpp`
+```cpp
+bool IndexingContext::indexDecl(const Decl *D) {
+  if (D->isImplicit() && shouldIgnoreIfImplicit(D))
+    return true;
+
+  if (isTemplateImplicitInstantiation(D) && !shouldIndexImplicitInstantiation())
+    return true;
+
+  IndexingDeclVisitor Visitor(*this);
+  bool ShouldContinue = Visitor.Visit(D);
+  if (!ShouldContinue)
+    return false;
+
+  if (!Visitor.Handled && isa<DeclContext>(D))
+    return indexDeclContext(cast<DeclContext>(D));
+
+  return true;
+}
+
+bool IndexingContext::indexDeclContext(const DeclContext *DC) {
+  for (const auto *I : DC->decls())
+    if (!indexDecl(I))
+      return false;
+  return true;
+}
+```
+
+
+The most confusing part is the `Visitor.Visit`. It is the central dispatcher to forward the decl to its handler by `getKind()`.
+
+`clang/include/clang/AST/DeclVisitor.h`
+```cpp
+namespace declvisitor {
+/// A simple visitor class that helps create declaration visitors.
+template<template <typename> class Ptr, typename ImplClass, typename RetTy=void>
+class Base {
+public:
+#define PTR(CLASS) typename Ptr<CLASS>::type
+#define DISPATCH(NAME, CLASS) \
+  return static_cast<ImplClass*>(this)->Visit##NAME(static_cast<PTR(CLASS)>(D))
+
+  RetTy Visit(PTR(Decl) D) {
+    switch (D->getKind()) {
+#define DECL(DERIVED, BASE) \
+      case Decl::DERIVED: DISPATCH(DERIVED##Decl, DERIVED##Decl);
+#define ABSTRACT_DECL(DECL)
+#include "clang/AST/DeclNodes.inc"
+    }
+    llvm_unreachable("Decl that isn't part of DeclNodes.inc!");
+  }
+
+  // If the implementation chooses not to implement a certain visit
+  // method, fall back to the parent.
+#define DECL(DERIVED, BASE) \
+  RetTy Visit##DERIVED##Decl(PTR(DERIVED##Decl) D) { DISPATCH(BASE, BASE); }
+#include "clang/AST/DeclNodes.inc"
+
+  RetTy VisitDecl(PTR(Decl) D) { return RetTy(); }
+
+#undef PTR
+#undef DISPATCH
+};
+
+} // namespace declvisitor
+```
+
+Explanation:
+
+
+
+`clang/AST/DeclNodes.inc` defines a lot of macros that will use specific macros you defined. For example, there are a lot of entries like
+
+```cpp
+#ifndef CXXMETHOD
+#  define CXXMETHOD(Type, Base) FUNCTION(Type, Base)
+#endif
+CXXMETHOD(CXXMethod, FunctionDecl)
+```
+
+By
+```cpp
+#define DECL(DERIVED, BASE) \
+      case Decl::DERIVED: DISPATCH(DERIVED##Decl, DERIVED##Decl);
+```
+
+`CXXMETHOD(CXXMethod, FunctionDecl)` becomes
+
+```cpp
+case Decl::CXXMethod: DISPATCH(CXXMethodDecl, CXXMethodDecl);
+```
+
+By
+```cpp
+#define DISPATCH(NAME, CLASS) \
+  return static_cast<ImplClass*>(this)->Visit##NAME(static_cast<PTR(CLASS)>(D))
+```
+
+it finally becomes
+
+```cpp
+case Decl::CXXMethod: return static_cast<ImplClass*>(this)->VisitCXXMethodDecl(static_cast<PTR(CXXMethodDecl)>(D))
+```
+
+Want to record destructor, so see how it handle stack var decl.
+
+```cpp
+bool VisitVarDecl(const VarDecl *D) {
+    SmallVector<SymbolRelation, 4> Relations;
+    gatherTemplatePseudoOverrides(D, Relations);
+    TRY_DECL(D, IndexCtx.handleDecl(D, SymbolRoleSet(), Relations));
+    handleDeclarator(D);
+    IndexCtx.indexBody(D->getInit(), D);
+    return true;
+}
+```
+
+`IndexingContext::handleDecl` or `IndexingContext::handleReference`
+`IndexingContext::handleDeclOccurrence` (resolve relations, overall context for consumer)
+
+```cpp
+bool IndexingContext::handleDecl(const Decl *D,
+                                 SymbolRoleSet Roles,
+                                 ArrayRef<SymbolRelation> Relations) {
+  return handleDecl(D, D->getLocation(), Roles, Relations);
+}
+
+bool IndexingContext::handleDecl(const Decl *D, SourceLocation Loc,
+                                 SymbolRoleSet Roles,
+                                 ArrayRef<SymbolRelation> Relations,
+                                 const DeclContext *DC) {
+  if (!DC)
+    DC = D->getDeclContext();
+
+  const Decl *OrigD = D;
+  if (isa<ObjCPropertyImplDecl>(D)) {
+    D = cast<ObjCPropertyImplDecl>(D)->getPropertyDecl();
+  }
+  return handleDeclOccurrence(D, Loc, /*IsRef=*/false, cast<Decl>(DC),
+                              Roles, Relations,
+                              nullptr, OrigD, DC);
+}
+
+bool IndexingContext::handleReference(const NamedDecl *D, SourceLocation Loc,
+                                      const NamedDecl *Parent,
+                                      const DeclContext *DC,
+                                      SymbolRoleSet Roles,
+                                      ArrayRef<SymbolRelation> Relations,
+                                      const Expr *RefE) {
+  if (!shouldIndexFunctionLocalSymbols() && isFunctionLocalSymbol(D))
+    return true;
+
+  if (!shouldIndexTemplateParameters() &&
+      (isa<NonTypeTemplateParmDecl>(D) || isa<TemplateTypeParmDecl>(D) ||
+       isa<TemplateTemplateParmDecl>(D))) {
+    return true;
+  }
+  return handleDeclOccurrence(D, Loc, /*IsRef=*/true, Parent, Roles, Relations,
+                              RefE, nullptr, DC);
+}
+```
+
+`SymbolCollector::handleDeclOccurrence` (TODO)
+
+
+SymbolRelation: basically a struct wrap another decl with role (represented by `SymbolRoleSet` typedef from `unsigned`)
+```cpp
+/// Represents a relation to another symbol for a symbol occurrence.
+struct SymbolRelation {
+  SymbolRoleSet Roles;
+  const Decl *RelatedSymbol;
+
+  SymbolRelation(SymbolRoleSet Roles, const Decl *Sym)
+    : Roles(Roles), RelatedSymbol(Sym) {}
+};
+```
