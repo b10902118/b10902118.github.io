@@ -40,22 +40,25 @@ export default function PostLayout({ content, authorDetails, next, prev, childre
         <div className="xl:divide-y xl:divide-gray-200 xl:dark:divide-gray-700">
           <header className="pt-6 xl:pb-6">
             <div className="space-y-1 text-center">
+              <div>
+                <PageTitle>{title}</PageTitle>
+              </div>
               <dl className="space-y-10">
                 <div>
                   <dt className="sr-only">Published on</dt>
                   <dd className="text-base leading-6 font-medium text-gray-500 dark:text-gray-400">
-                    <time dateTime={date}>
-                      {new Date(date).toLocaleDateString(siteMetadata.locale, postDateTemplate)}
-                    </time>
+                    <time dateTime={date}>{new Date(date).toISOString().slice(0, 10)}</time>
+                  </dd>
+                  <dt className="sr-only">Tags</dt>
+                  <dd className="text-base leading-6 font-medium text-gray-500 dark:text-gray-400">
+                    {tags && tags.map((tag) => <Tag key={tag} text={tag} />)}
                   </dd>
                 </div>
               </dl>
-              <div>
-                <PageTitle>{title}</PageTitle>
-              </div>
             </div>
           </header>
-          <div className="grid-rows-[auto_1fr] divide-y divide-gray-200 pb-8 xl:grid xl:grid-cols-4 xl:gap-x-6 xl:divide-y-0 dark:divide-gray-700">
+          <div className="divide-y divide-gray-200 pb-8 xl:divide-y-0 dark:divide-gray-700">
+            {/*
             <dl className="pt-6 pb-10 xl:border-b xl:border-gray-200 xl:pt-11 xl:dark:border-gray-700">
               <dt className="sr-only">Authors</dt>
               <dd>
@@ -93,8 +96,10 @@ export default function PostLayout({ content, authorDetails, next, prev, childre
                 </ul>
               </dd>
             </dl>
+            */}
             <div className="divide-y divide-gray-200 xl:col-span-3 xl:row-span-2 xl:pb-0 dark:divide-gray-700">
               <div className="prose dark:prose-invert max-w-none pt-10 pb-8">{children}</div>
+              {/*
               <div className="pt-6 pb-6 text-sm text-gray-700 dark:text-gray-300">
                 <Link href={discussUrl(path)} rel="nofollow">
                   Discuss on Twitter
@@ -110,7 +115,9 @@ export default function PostLayout({ content, authorDetails, next, prev, childre
                   <Comments slug={slug} />
                 </div>
               )}
+              */}
             </div>
+            {/*
             <footer>
               <div className="divide-gray-200 text-sm leading-5 font-medium xl:col-start-1 xl:row-start-2 xl:divide-y dark:divide-gray-700">
                 {tags && (
@@ -160,6 +167,7 @@ export default function PostLayout({ content, authorDetails, next, prev, childre
                 </Link>
               </div>
             </footer>
+            */}
           </div>
         </div>
       </article>

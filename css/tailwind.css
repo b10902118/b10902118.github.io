@@ -80,6 +80,7 @@
 
 @layer utilities {
   .prose {
+    font-size: 1.25rem;
     & a {
       color: var(--color-primary-500);
       &:hover {
